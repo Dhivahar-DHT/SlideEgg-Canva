@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PPTX to Fabric Converter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <style>
+        #canvas-container {
+            margin: 20px;
+            border: 1px solid #ccc;
+        }
+        .controls {
+            margin: 20px;
+        }
+        #slide-nav {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <input type="file" id="pptx-upload" accept=".pptx" />
+        <div id="slide-nav">
+            <button id="prev-slide">Previous</button>
+            <span id="slide-info">Slide 0/0</span>
+            <button id="next-slide">Next</button>
+                </div>
+        </div>
+    <div id="canvas-container">
+        <canvas id="fabric-canvas"></canvas>
+    </div>
+
+    <script>
+        let canvas = new fabric.Canvas('fabric-canvas');
+        let currentSlide = 0;
+        let slidesData = [];
+
+        // Initialize canvas size
+        canvas.setWidth(1000);
+        canvas.setHeight(600);
+
+        function createGradient(obj, height) {
+            if (!obj.fill?.value?.colorStops) return null;
+
+            try {
+                // Convert colorStops object to array format that Fabric.js expects
+                const colorStopsArray = [];
+                Object.entries(obj.fill.value.colorStops).forEach(([offset, color]) => {
+                    colorStopsArray.push({
+                        offset: parseFloat(offset),
+                        color: color
+                    });
+                });
+
+                // Sort stops by offset
+                colorStopsArray.sort((a, b) => a.offset - b.offset);
+
+                // Ensure we have at least two stops
+                if (colorStopsArray.length < 2) {
+                    colorStopsArray.push({
+                        offset: 1,
+                        color: colorStopsArray[0].color
+                    });
+                }
+
+                return new fabric.Gradient({
+                    type: 'linear',
+                    coords: {
+                        x1: 0,
+                        y1: 0,
+                        x2: 0,
+                        y2: height
+                    },
+                    gradientUnits: 'pixels',
+                    colorStops: colorStopsArray
+                });
+            } catch (error) {
+                console.error('Error creating gradient:', error);
+                return null;
+            }
+        }
+
+        function createFabricObject(obj, scale) {
+            console.log('Creating object:', obj.type, obj);
+            
+            if (!obj) return Promise.resolve(null);
+
+            const commonProps = {
+                left: obj.left * scale,
+                top: obj.top * scale,
+                width: obj.width * scale,
+                height: obj.height * scale,
+                angle: obj.angle || 0,
+                originX: 'left',
+                originY: 'top',
+                objectCaching: false
+            };
+
+            switch(obj.type) {
+                case 'path':
+                    return createPathObject(obj, scale);
+
+                case 'rect':
+                    return Promise.resolve(new fabric.Rect({
+                        ...commonProps,
+                        fill: obj.fill || '#FFFFFF',
+                        stroke: obj.stroke || '#000000',
+                        strokeWidth: obj.strokeWidth || 1,
+                        selectable: obj.selectable !== false
+                    }));
+
+                case 'triangle':
+                    // Create a triangle for markers
+                    const triangleWidth = obj.width * scale;
+                    const triangleHeight = obj.height * scale;
+                    return Promise.resolve(new fabric.Triangle({
+                        ...commonProps,
+                        width: triangleWidth,
+                        height: triangleHeight,
+                        fill: obj.fill || '#FF0000',
+                        stroke: obj.stroke || 'none',
+                        strokeWidth: 0,
+                        angle: 180  // Point downward
+                    }));
+
+                case 'textbox':
+                    const textbox = new fabric.Textbox(obj.text || '', {
+                        ...commonProps,
+                        text: obj.text || '',
+                        fontSize: obj.fontSize || 12,
+                        fontFamily: obj.fontFamily || 'Arial',
+                        fill: obj.fill || '#000000',
+                        backgroundColor: obj.backgroundColor || 'transparent',
+                        stroke: obj.stroke || 'transparent',
+                        strokeWidth: obj.strokeWidth || 0,
+                        textAlign: obj.textAlign || 'center',
+                        width: obj.width * scale,
+                        originX: 'center',
+                        left: obj.left * scale + (obj.width * scale / 2)  // Center the text
+                    });
+                    
+                    // Adjust text wrapping
+                    textbox.set({
+                        splitByGrapheme: false,
+                        lockUniScaling: true,
+                        lockScalingX: true,
+                        lockScalingY: true
+                    });
+                    
+                    return Promise.resolve(textbox);
+
+                case 'image':
+                    return createImageObject(obj, scale);
+
+                case 'group':
+                    return createGroupObject(obj, scale);
+
+                default:
+                    console.warn('Unknown object type:', obj.type);
+                    return Promise.resolve(null);
+            }
+        }
+
+        function createPathObject(obj, scale) {
+            if (!obj.path) return Promise.resolve(null);
+
+            return new Promise((resolve) => {
+                try {
+                    const pathObj = new fabric.Path(obj.path, {
+                        left: obj.left * scale,
+                        top: obj.top * scale,
+                        scaleX: scale,
+                        scaleY: scale,
+                        originX: 'left',
+                        originY: 'top',
+                        fill: obj.fill || '#FFFFFF',
+                        stroke: obj.stroke || '#000000',
+                        strokeWidth: obj.strokeWidth || 1,
+                        objectCaching: false
+                    });
+                    resolve(pathObj);
+                } catch (error) {
+                    console.error('Error creating path object:', error);
+                    resolve(null);
+                }
+            });
+        }
+
+        function createShapeObject(obj, scale) {
+            const shapeProps = {
+                left: obj.left * scale,
+                top: obj.top * scale,
+                width: obj.width * scale,
+                height: obj.height * scale,
+                angle: obj.angle || 0,
+                originX: 'left',
+                originY: 'top',
+                objectCaching: false,
+                fill: '#ffffff'  // Default fill
+            };
+
+            if (obj.fill) {
+                if (obj.fill.type === 'gradient') {
+                    const gradient = createGradient(obj, shapeProps.height);
+                    if (gradient) {
+                        shapeProps.fill = gradient;
+                    }
+                } else if (obj.fill.type === 'solid') {
+                    shapeProps.fill = obj.fill.value;
+                }
+            }
+
+            return Promise.resolve(new fabric.Rect(shapeProps));
+        }
+
+        function createTextboxObject(obj, scale) {
+            const textProps = {
+                left: obj.left * scale,
+                top: obj.top * scale,
+                width: obj.width * scale,
+                height: obj.height * scale,
+                angle: obj.angle || 0,
+                textAlign: 'left',
+                fontSize: 12 * scale,
+                fontFamily: 'Arial',
+                fill: '#000000'
+            };
+
+            if (obj.paragraphs && obj.paragraphs.length > 0) {
+                const para = obj.paragraphs[0];
+                Object.assign(textProps, {
+                    text: para.text || '',
+                    textAlign: para.align || 'left',
+                    fontSize: (para.fontSize || 12) * scale,
+                    fontFamily: para.fontFamily || 'Arial',
+                    fontWeight: para.fontWeight || 'normal',
+                    fontStyle: para.fontStyle || 'normal',
+                    fill: para.fill || '#000000'
+                });
+            }
+
+            return Promise.resolve(new fabric.Textbox(textProps.text || '', textProps));
+        }
+
+        function createImageObject(obj, scale) {
+            if (!obj.src) return Promise.resolve(null);
+
+            return new Promise((resolve) => {
+                fabric.Image.fromURL(obj.src, img => {
+                    if (!img) {
+                        console.error('Failed to load image:', obj.src);
+                        resolve(null);
+                        return;
+                    }
+                    
+                    img.set({
+                        left: obj.left * scale,
+                        top: obj.top * scale,
+                        scaleX: (obj.width * scale) / img.width,
+                        scaleY: (obj.height * scale) / img.height,
+                        angle: obj.angle || 0,
+                        opacity: obj.opacity || 1,
+                        originX: 'left',
+                        originY: 'top',
+                        objectCaching: false
+                    });
+                    resolve(img);
+                }, { crossOrigin: 'anonymous' });
+            });
+        }
+
+        function createGroupObject(obj, scale) {
+            return Promise.all(obj.objects.map(childObj => createFabricObject(childObj, scale)))
+                .then(objects => {
+                    objects = objects.filter(o => o !== null);
+                    if (objects.length === 0) return null;
+                    
+                    const group = new fabric.Group(objects, {
+                        left: obj.left * scale,
+                        top: obj.top * scale,
+                        originX: 'left',
+                        originY: 'top',
+                        objectCaching: false
+                    });
+                    
+                    return group;
+                });
+        }
+
+        function renderSlide(slideData, canvas) {
+            console.log('Rendering slide:', slideData);
+            canvas.clear();
+            canvas.backgroundColor = '#FFFFFF';  // Set white background
+
+            // Sort objects by type to ensure proper rendering order
+            const sortedObjects = slideData.objects.sort((a, b) => {
+                const typeOrder = {
+                    'rect': 1,
+                    'path': 2,
+                    'image': 3,
+                    'triangle': 4,
+                    'textbox': 5
+                };
+                return (typeOrder[a.type] || 99) - (typeOrder[b.type] || 99);
+            });
+
+            // Calculate scale
+            const scale = Math.min(
+                canvas.width / slideData.width,
+                canvas.height / slideData.height
+            );
+            console.log('Calculated scale:', scale);  // Debug log
+
+            // Process each object
+            return Promise.all(sortedObjects.map(obj => {
+                console.log('Processing object:', obj);
+                return createFabricObject(obj, scale).then(fabricObj => {
+                    if (fabricObj) {
+                        canvas.add(fabricObj);
+                        console.log('Added object to canvas:', fabricObj);
+                        fabricObj.setCoords();  // Ensure object is properly positioned
+                    }
+                    return fabricObj;
+                });
+            })).then(() => {
+                canvas.renderAll();
+            });
+        }
+
+        document.getElementById('pptx-upload').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/pptx-to-fabric', {
+                    method: 'POST',
+                    body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                slidesData = data.fabric;
+                currentSlide = 0;
+                renderSlide(slidesData[currentSlide], canvas);
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error converting file');
+            });
+        });
+
+        document.getElementById('prev-slide').addEventListener('click', () => {
+            if (currentSlide > 0) {
+                currentSlide--;
+                renderSlide(slidesData[currentSlide], canvas);
+            }
+        });
+
+        document.getElementById('next-slide').addEventListener('click', () => {
+            if (currentSlide < slidesData.length - 1) {
+                currentSlide++;
+                renderSlide(slidesData[currentSlide], canvas);
+            }
+        });
+    </script>
+</body>
+</html> 
